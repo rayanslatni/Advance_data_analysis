@@ -1,0 +1,485 @@
+---
+title: "Outline_Project"
+author: "Rayan Slatni"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Load the packages
+
+```{r, message=FALSE, warning=FALSE}
+PACKAGES <- c("caret",          # To create data partitions
+  "genefilter",     
+  "ggplot2",        
+  "gplots",
+  "ggpubr",
+  "glmnet",         
+  "MASS",            
+  "pROC",           
+  "randomForest",   # To use random forest algorithm
+  "RColorBrewer",   # To define heatmap palette
+  "reshape2",       # To melt dataset for plotting
+  "ROCR",           # To plot ROC curves 
+  "tidyverse",      # To make data handling easier
+  "GEOquery" ,       #for access to the databse
+  "useful",
+  "factoextra",  # To get better plots (ggplot wrapper)
+  "ggfortify",      #To plot PCA
+  "vctrs",
+  "tibble",
+  "e1071",          #Statistic
+  "gtools",         #fold-change
+  "RCy3",           #Cytoscape
+  "glue",           #Saving plots 
+  "colorBlindness", #Color palette
+  "rScudo",         #Scudo
+  "gProfileR",      #Interface to G-Profiler
+  "gprofiler2",     #Interface to G-Profiler
+  "BiocManager",
+  "KEGGREST",
+  "KEGGgraph",
+  "AnnotationDbi",
+  "org.Hs.eg.db",
+  "pathfindR.data",
+  "stats",
+  "ComplexHeatmap",
+  "gridExtra",
+  "R.filesets",
+  "DOSE",
+  "clusterProfiler"
+  #"hgu95av2.db" #Genome annotation Affy HU 95
+)
+
+invisible(lapply(PACKAGES, library, character.only = TRUE))
+```
+
+Define function for the LDA plot
+
+```{r}
+ggplotLDAPrep <- function(x){
+  if (!is.null(Terms <- x$terms)) {
+    data <- model.frame(x)
+    X <- model.matrix(delete.response(Terms), data)
+    g <- model.response(data)
+    xint <- match("(Intercept)", colnames(X), nomatch = 0L)
+    if (xint > 0L) 
+      X <- X[, -xint, drop = FALSE]
+  }
+  means <- colMeans(x$means)
+  X <- scale(X, center = means, scale = FALSE) %*% x$scaling
+  rtrn <- as.data.frame(cbind(X,labels=as.character(g)))
+  rtrn <- data.frame(X,labels=as.character(g))
+  return(rtrn)
+}
+```
+
+Get the data fro GEO
+
+```{r}
+Gse_ID <- "GSE12654"
+gse1<- getGEO(Gse_ID) #GSE identifier of the file
+gse<-gse1[[1]]
+ex<- exprs(gse)# ex is the new data matrix
+dim(ex) #12625 genes and 50 samples
+meta<- pData(gse) #phenoData #save the meta data
+```
+
+```{r}
+dataBA10<-ex
+dataBA10<-dataBA10[, order(meta$source_name_ch1)]
+```
+
+Normalization via log2, and via housekeeping gene
+```{r}
+dataBA10<- log2(dataBA10)
+GAPDH <- dataBA10[5962,] #housekeeping gene
+dataBA10 <- sweep(dataBA10, 2, GAPDH, FUN = '/')
+```
+
+```{r}
+grpcol<- c(rep("#cc6a70ff", 11), rep("#253582ff", 15), rep("#7e4e90ff",11 ), rep("#f9a242ff",13))
+
+Group_BA10 = c(rep("Bipolar", 11), rep("Control", 15), rep("Depression", 11), rep("Schizophrenia", 13))
+```
+
+Boxplot to see how data are distributed
+```{r}
+boxplot(dataBA10, las=2, xlab="Samples", ylab="scale(value)", cex.lab=1, cex.axis=0.4, col= grpcol, main= "Normalization Count")
+```
+
+
+
+Define a function for the ROW T-TEST
+```{r}
+pV <- 0.01
+t_test <- function(gene_expression, group1, group2, group1_index, group2_index){
+    
+small_data<- gene_expression[, c( min(group1_index):max(group1_index),min(group2_index):max(group2_index)) ]
+   
+f <- factor(c(rep(group1,length(group1_index)),    rep(group2,length(group2_index)))) #vector of labels
+
+t_res <- rowttests(small_data,f) #predict a p-value
+significant_genes <- which((t_res$p.value)<pV)
+return(list(significant_genes = significant_genes, p_values = t_res$p.value))
+}
+```
+
+Define a function for the FC
+```{r}
+compute_fold_change <- function(group1_data, group2_data) {
+  mean_group1 <- rowMeans(group1_data)
+  mean_group2 <- rowMeans(group2_data)
+  fold_change <- foldchange(mean_group1 , mean_group2)
+  return(fold_change)
+}
+```
+
+
+Define a Function to produce a Gene-pvalue-FC-group dataframe
+```{r}
+create_mine_data <- function(data, gruppo1, gruppo2, group1_data, group2_data){
+  t_res <- t_test(data, gruppo1, gruppo2, i1, i2)
+  result_with_fc <- data.frame(
+    Gene_Affy <- rownames(data), #affymetrix name
+    Gene_symbol <- gse@featureData@data$`Gene Symbol` , #gene symbol
+    #compute the p value
+    p_value <- t_res$p_value, 
+    #compute the foldchange
+    fold_change <- compute_fold_change(group1_data , group2_data), 
+    Groups <- rep(paste(gruppo1, gruppo2, sep = "-"), nrow(data)))
+  
+   #filter for the sigificant genes
+    filtered_results <- result_with_fc[t_res$significant_genes, ]
+  #rename the columns
+    colnames(filtered_results) <- c( "Gene_ID", "Gene_Symbol", "P_Value", "Fold_Change", "Comparison_Groups")
+  return(filtered_results)
+}
+```
+
+Define the input
+```{r}
+gruppo1 <- "Bipolar"
+gruppo2 <- "Control"
+i1 <- c(1:11)
+i2 <- c(12:26)
+data <- dataBA10
+group1_data <- data[,i1]
+group2_data <- data[,i2]
+```
+
+
+```{r}
+#assign a name to the dataframe
+name <- paste(gruppo1, gruppo2, sep = "_vs_") 
+assign(name, create_mine_data(data, gruppo1, gruppo2, group1_data, group2_data ))
+```
+
+
+Merge the data and remove the duplicate
+```{r}
+#data_frames <- list(Bipolar_vs_Control, Bipolar_vs_Depression, Bipolar_vs_Schizophrenia, Control_vs_Depression, Control_vs_Schizophrenia, Schizophrenia_vs_Depression)
+
+# Combine all data frames using rbind
+#merged_data <- do.call(rbind, data_frames)
+```
+
+```{r}
+#ex_BA10 <- dataBA10[c(result1, result2, result3, result4, result5, result6 ),] #reduced data matrix
+#dim(ex_BA10) #we obtain 537 significant genes
+
+```
+
+
+
+Let's transpose the matrix and add the Groups
+```{r}
+ex_BA10_t <- t(ex_BA10) #LDA need transposition
+ex_BA10_t <- cbind(as.data.frame(ex_BA10_t),Group_BA10) #LDA need labels, added to the data matrix
+colnames(ex_BA10_t)[ncol(ex_BA10_t)] <- "Group"
+duplicated_names <- duplicated(colnames(ex_BA10_t))
+dataBA10<-ex_BA10_t[!duplicated_names] #449 after removing the duplicates
+```
+
+Separate the data into training and validation set
+```{r}
+set.seed(123)
+
+# Sample 80% of the data for training and 20% for validation
+train_indices <- sample(1:nrow(dataBA10), 0.8 * nrow(dataBA10))
+train_data <- dataBA10[train_indices, ]
+validation_data <- dataBA10[-train_indices, ]
+```
+
+Define the CV method
+```{r}
+metric <- "Accuracy"
+control <- trainControl(method = "repeatedcv", number = 10, repeats = 10)
+```
+
+
+Run the LDA
+```{r}
+library(MASS)
+lda_model <- lda(Group ~ ., data = train_data)
+
+# Predict on validation set
+lda_predictions <- predict(lda_model, newdata = validation_data)$class
+
+# Calculate accuracy
+lda_accuracy <- mean(lda_predictions == validation_data$Group)
+```
+LDA ha 0.9 of accuracy
+
+
+RF for feature selection
+
+```{r}
+set.seed(1)
+fit.rf <- train(Group~., data=dataBA10, method="rf",
+                metric=metric, trControl=control)
+
+```
+
+```{r}
+confusionMatrix(fit.rf)
+plot(fit.rf)
+```
+RF has accuracy 0.83
+
+RUN Lasso
+```{r}
+library(glmnet)
+lasso_model <- cv.glmnet(as.matrix(train_data[, -ncol(train_data)]), as.factor(train_data$Group), family = "multinomial")
+
+# Predict on validation set
+lasso_predictions <- predict(lasso_model, newx = as.matrix(validation_data[, -ncol(validation_data)]), s = "lambda.min", type = "class")
+
+# Calculate accuracy
+lasso_accuracy <- mean(lasso_predictions == validation_data$Group)
+```
+Lasso accuracy is 0.6
+
+
+
+Since LDA is the one that better performed let's apply it
+
+```{r}
+mod.lda <- lda(Group ~ ., data=dataBA10)
+mod.values <- predict(mod.lda, dataBA10)
+```
+
+Plot LDA results
+```{r}
+fitGraph <- ggplotLDAPrep(mod.lda)
+ggplot(fitGraph, aes(LD1,LD2, color=labels))+geom_point()+ggtitle("Linear Discriminant Analysis")+
+  scale_color_manual(values=c("#cc6a70ff", "#253582ff","#7e4e90ff", "#f9a242ff" ))
+
+# ggsave(
+#   paste(glue("LDA.jpg")),
+#   path = IMG_FOLDER, 
+#   device='jpg', 
+#   dpi=700)
+```
+
+Extract important variable for LDA
+```{r}
+lda_coefficients <- as.data.frame(mod.lda$scaling)
+# Rank genes by their importance (absolute value of coefficients)
+lda_coefficients$importance <- apply(lda_coefficients, 1, function(x) sum(abs(x)))
+# Order genes by their importance
+lda_coefficients <- lda_coefficients[order(-lda_coefficients$importance), ]
+# Select the top 100 genes
+top_200_genes <- head(lda_coefficients, 200)
+# Extract the names of the top 100 genes
+top_200_gene_names <- rownames(top_200_genes)
+```
+
+```{r}
+remove_first_last_char <- function(x) {
+  substr(x, 2, nchar(x) - 1)
+}
+
+# Apply the function to each gene name
+modified_gene_names <- sapply(top_200_gene_names, remove_first_last_char)
+```
+
+save the result
+```{r}
+write.table(modified_gene_names, file = "geniBA10_200.txt", quote=FALSE, row.names = FALSE, col.names = FALSE)
+```
+
+
+Now from the converted list, remove the duplicats
+```{r}
+data <- readLines("geniBA10_200_ENTERGZ")
+unique_data <- unique(data)
+unique_data <- sort(unique_data)
+print(unique_data)
+write.table(unique_data, file = "geniBA10_200_ENTERGZ_unique.txt", quote=FALSE, row.names = FALSE, col.names = FALSE)
+```
+
+
+
+Now I want to filter the pairwise data in order to keep only the genes that are important for LDA
+```{r}
+filtered_Bipolar_vs_Control <- Bipolar_vs_Control[Bipolar_vs_Control$Gene_ID %in% modified_gene_names, ]
+
+filtered_Bipolar_vs_Depression <- Bipolar_vs_Depression[Bipolar_vs_Depression$Gene_ID %in% modified_gene_names, ]
+
+filtered_Bipolar_vs_Schizophrenia <- Bipolar_vs_Schizophrenia[Bipolar_vs_Schizophrenia$Gene_ID %in% modified_gene_names, ]
+
+filtered_Control_vs_Depression <- Control_vs_Depression[Control_vs_Depression$Gene_ID %in% modified_gene_names, ]
+
+filtered_Control_vs_Schizophrenia <- Control_vs_Schizophrenia [Control_vs_Schizophrenia$Gene_ID %in% modified_gene_names, ]
+
+filtered_Schizophrenia_vs_Depression <- Schizophrenia_vs_Depression [Schizophrenia_vs_Depression$Gene_ID %in% modified_gene_names, ]
+```
+
+Save some results 
+```{r}
+save(filtered_Schizophrenia_vs_Depression, file = "filtered_Schizophrenia_vs_Depression.RData")
+```
+
+Identify the genes to their actual name
+
+```{r}
+x<- c(gse@featureData@data$ID)
+y<- c(gse@featureData@data$`Gene Symbol`)
+geni<- data.frame("Affy"=x,"Name"=y)
+```
+
+
+PHEAMAP
+```{r}
+df <- dataBA10
+#transpose and remove the group 
+sig_expr_matrix <- t(df[, modified_gene_names]) #selct the 200 gene by LDA
+geni_matrix <- geni$Name[geni$Affy %in% modified_gene_names]
+rownames(sig_expr_matrix) <- geni_matrix
+#change some gene name
+rownames(sig_expr_matrix)[1] <- "TRDC"
+rownames(sig_expr_matrix)[5] <- "NF1"
+```
+
+```{r}
+sample_annotations <- data.frame(Group_BA10 = Group_BA10)
+rownames(sample_annotations) <- colnames(sig_expr_matrix)
+group_colors <- c("Bipolar" = "#cc6a70ff", "Control" = "#253582ff", 
+                  "Depression" = "#7e4e90ff",  "Schizophrenia" = "#f9a242ff")
+annotation_colors <- list(Group_BA10 = group_colors)
+```
+
+
+```{r}
+pheatmap(sig_expr_matrix[1:50, ], 
+         scale = "row", 
+         cluster_rows = TRUE, 
+         annotation_col = sample_annotations,
+         annotation_colors = annotation_colors,  # Custom group colors
+         show_colnames = FALSE,
+         cluster_cols = FALSE,
+         main = "Heatmap of 50 Significant Genes BA10",
+         color = colorRampPalette(c("navy", "white", "red"))(50))
+```
+
+
+
+
+Volcano Plot
+
+```{r}
+df <- filtered_Schizophrenia_vs_Depression
+df$diffexpressed <- "NO"
+# Categorize genes as "UP" if log2FoldChange > 0.6 and p-value < 0.05
+df$diffexpressed[df$Fold_Change > 1 & df$P_Value < 0.01] <- "UP"
+# Categorize genes as "DOWN" if log2FoldChange < -0.6 and p-value < 0.05
+df$diffexpressed[df$Fold_Change < -1 & df$P_Value < 0.01] <- "DOWN"
+df$padj <- p.adjust(df$P_Value, method = "fdr")
+
+df$delabel <- NA
+df$delabel[df$diffexpressed != "NO"] <-df$Gene_Symbol [df$diffexpressed != "NO"]
+```
+
+
+```{r}
+mycolors <- c("#00AFBB", "#bb0c00", "grey")
+names(mycolors) <- c("DOWN", "UP", "NO")
+
+pSD<- ggplot(data=df, aes(x=Fold_Change, y=-log10(P_Value), col=diffexpressed, label=delabel)) + 
+
+  geom_vline(xintercept=c(-1, 1), col= "grey", linetype = 'dashed') +
+  geom_hline(yintercept=-log10(0.05), col= "grey", linetype = 'dashed')+
+ scale_colour_manual(values = mycolors)+
+ labs(x = expression("log"[2]*"FC"), y = expression("-log"[10]*"p-value")) + 
+ ggtitle('Volcano plot schizophrenia vs depression (BA10)') +
+  geom_point() + 
+  theme_minimal()+
+  geom_text()
+
+```
+
+```{r}
+
+grid.arrange(pBC, pBD, pBS, pCD, pCS, pSD, nrow = 2, ncol = 3)
+```
+
+
+
+
+
+
+
+
+
+          
+KEGG and enrichgo
+```{r}
+entrez_ids <- bitr(filtered_Bipolar_vs_Control$Gene_symbol, fromType = "SYMBOL", toType = "ENTREZID", OrgDb = org.Hs.eg.db)
+```
+
+```{r}
+edo <- enrichDGN( c(filtered_Bipolar_vs_Control$Gene_ID, filtered_Bipolar_vs_Control$Fold_Change ))
+#barplot(edo, showCategory=20) 
+```
+
+
+```{r}
+ego <- enrichGO(gene         = entrez_ids$ENTREZID,
+                OrgDb        = org.Hs.eg.db,
+                keyType      = 'ENTREZID',  
+                ont          = "BP",
+                pAdjustMethod = "BH",
+                qvalueCutoff = 0.05,
+                readable     = TRUE)
+```
+
+```{r}
+ekegg <- enrichKEGG(gene         = entrez_ids$ENTREZID,
+                    organism     = 'hsa',  # 'hsa' for human
+                    pAdjustMethod = "BH",
+                    qvalueCutoff = 0.05)
+```
+
+```{r}
+dotplot(ego, showCategory=20) + ggtitle("GO Enrichment Analysis")
+```
+
+```{r}
+if (nrow(ekegg) > 0) {
+    print(ekegg)
+    
+    # Plot KEGG Pathway Enrichment Results
+    barplot(ekegg, showCategory=20) + ggtitle("KEGG Pathway Enrichment Analysis")
+} else {
+    print("No significant pathways found.")
+}
+```
+
+
+
+
+
