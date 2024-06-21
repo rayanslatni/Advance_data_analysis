@@ -1,0 +1,263 @@
+---
+title: "Untitled"
+author: "Rayan Slatni"
+date: "2023-07-29"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+
+```{r}
+gse<-loadRDS("GSE208338.rds")
+```
+
+```{r}
+ex<- exprs(gse)# ex is the new data matrix
+dim(ex) #54675 genes and 205 samples
+meta<- pData(gse) #phenoData #save the meta data
+```
+```{r}
+dataBA9<-ex
+dataBA9<-dataBA9[, order(meta$`diagnosis:ch1`)]
+```
+
+
+Normalization step
+```{r}
+dataBA9<- log2(dataBA9)/GADPH
+```
+
+```{r}
+grpcol_BA9<- c(rep("#cc6a70ff", 15),rep("#253582ff", 62), rep("#7e4e90ff",24 ), rep("#f9a242ff",68))
+Group_BA9 = c(rep("Bipolar", 15), rep("Control", 62), rep("Depression", 24), rep("Schizophrenia", 68))
+```
+
+Define a Function to produce a Gene-pvalue-FC-group dataframe
+```{r}
+create_mine_data <- function(data, gruppo1, gruppo2, group1_data, group2_data){
+  t_res <- t_test(data, gruppo1, gruppo2, i1, i2)
+  result_with_fc <- data.frame(
+    Exon <- rownames(data), #affymetrix name
+    #compute the p value
+    p_value <- t_res$p_value, 
+    #compute the foldchange
+    fold_change <- compute_fold_change(group1_data , group2_data), 
+    Groups <- rep(paste(gruppo1, gruppo2, sep = "-"), nrow(data)))
+  
+   #filter for the sigificant genes
+    filtered_results <- result_with_fc[t_res$significant_genes, ]
+  #rename the columns
+    colnames(filtered_results) <- c( "Gene_ID", "P_Value", "Fold_Change", "Comparison_Groups")
+  return(filtered_results)
+}
+```
+
+
+Define the input
+```{r}
+gruppo1 <- "Schizophrenia"
+gruppo2 <- "Depression"
+i1 <- c(102:169)
+i2 <- c(78:101)
+data <- dataBA9
+group1_data <- data[,i1]
+group2_data <- data[,i2]
+```
+
+
+```{r}
+#assign a name to the dataframe
+name <- paste(gruppo1, gruppo2, sep = "_vs_") 
+assign(name, create_mine_data(data, gruppo1, gruppo2, group1_data, group2_data ))
+```
+
+
+
+```{r}
+#ex_BA9 <- dataBA9[c(result1, result2, result3, result4, result5, result6 ),] 
+#dim(ex_BA9) #we obtain 64332 significant genes
+```
+
+
+Let's transpose the matrix and add the Groups
+```{r}
+ex_BA9_t <- t(ex_BA9) #LDA need transposition
+ex_BA9_t <- cbind(as.data.frame(ex_BA9_t),Group_BA9) #LDA need labels, added to the data matrix
+colnames(ex_BA9_t)[ncol(ex_BA9_t)] <- "Group"
+duplicated_names <- duplicated(colnames(ex_BA9_t))
+dataBA9<-ex_BA9_t[!duplicated_names] #449 after removing the duplicates
+```
+
+```{r}
+save(dataBA9, file = "dataBA9.RData")
+```
+
+Separate the data into training and validation set
+```{r}
+set.seed(123)
+
+# Sample 80% of the data for training and 20% for validation
+train_indices <- sample(1:nrow(dataBA9), 0.8 * nrow(dataBA9))
+train_data <- dataBA9[train_indices, ]
+validation_data <- dataBA9[-train_indices, ]
+```
+
+
+```{r}
+library(MASS)
+lda_model <- lda(Group ~ ., data = train_data)
+
+# Predict on validation set
+lda_predictions <- predict(lda_model, newdata = validation_data)$class
+
+# Calculate accuracy
+lda_accuracy <- mean(lda_predictions == validation_data$Group)
+```
+Accuracy of LDA 0.94
+
+
+```{r}
+mod.lda <- lda(Group ~ ., data=dataBA9)
+mod.values <- predict(mod.lda, dataBA9)
+```
+
+
+Extract important variable for LDA
+```{r}
+lda_coefficients <- as.data.frame(mod.lda$scaling)
+# Rank genes by their importance (absolute value of coefficients)
+lda_coefficients$importance <- apply(lda_coefficients, 1, function(x) sum(abs(x)))
+# Order genes by their importance
+lda_coefficients <- lda_coefficients[order(-lda_coefficients$importance), ]
+# Select the top 100 genes
+top_200_genes <- head(lda_coefficients, 200)
+# Extract the names of the top 100 genes
+top_200_gene_names <- rownames(top_200_genes)
+```
+
+```{r}
+remove_first_last_char <- function(x) {
+  substr(x, 2, nchar(x) - 1)
+}
+
+# Apply the function to each gene name
+gene_names <- sapply(top_200_gene_names, remove_first_last_char)
+```
+
+save the result
+```{r}
+write.table(gene_names, file = "geni_BA9_200.txt", quote=FALSE, row.names = FALSE, col.names = FALSE)
+```
+
+Upload the list already computed with LDA
+```{r}
+modified_gene_names <-readLines("geni_BA9_200_ENERGZ")
+```
+
+Merge them so we can have both names
+```{r}
+geni<- data.frame("Exon_id" = gene_names,"Name"= modified_gene_names)
+```
+
+Filter the datasets
+
+
+```{r}
+filtered_Bipolar_vs_Control <- Bipolar_vs_Control[Bipolar_vs_Control$Gene_ID %in% gene_names, ]
+
+filtered_Bipolar_vs_Depression <- Bipolar_vs_Depression[Bipolar_vs_Depression$Gene_ID %in% gene_names, ]
+
+filtered_Bipolar_vs_Schizophrenia <- Bipolar_vs_Schizophrenia[Bipolar_vs_Schizophrenia$Gene_ID %in% gene_names, ]
+
+filtered_Control_vs_Depression <- Control_vs_Depression[Control_vs_Depression$Gene_ID %in% gene_names, ]
+
+filtered_Control_vs_Schizophrenia <- Control_vs_Schizophrenia [Control_vs_Schizophrenia$Gene_ID %in% gene_names, ]
+
+filtered_Schizophrenia_vs_Depression <- Schizophrenia_vs_Depression [Schizophrenia_vs_Depression$Gene_ID %in% gene_names, ]
+```
+
+Now add the normal gene name
+```{r}
+filtered_Control_vs_Schizophrenia$Gene_symbol <- geni$Name[gene_names %in%  filtered_Control_vs_Schizophrenia$Gene_ID]
+```
+
+
+Save some results
+
+```{r}
+save(filtered_Schizophrenia_vs_Depression, file = "filtered_Schizophrenia_vs_Depression.RData")
+```
+
+
+```{r}
+df <- dataBA9
+#transpose and remove the group 
+sig_expr_matrix <- t(df[, gene_names]) #selct the 200 gene by LDA
+geni_matrix <- geni$Name[geni$Exon_id %in% gene_names]
+rownames(sig_expr_matrix) <- geni_matrix
+```
+
+```{r}
+sample_annotations <- data.frame(Group_BA9 = Group_BA9)
+rownames(sample_annotations) <- colnames(sig_expr_matrix)
+group_colors <- c("Bipolar" = "#cc6a70ff", "Control" = "#253582ff", 
+                  "Depression" = "#7e4e90ff",  "Schizophrenia" = "#f9a242ff")
+annotation_colors <- list(Group_BA9 = group_colors)
+```
+
+
+```{r}
+pheatmap(sig_expr_matrix[c(1:9, 11, 13:16,18:21, 23:25, 27:34, 36:42, 44:46, 48:58 ), ], 
+         scale = "row", 
+         cluster_rows = TRUE, 
+         annotation_col = sample_annotations,
+         annotation_colors = annotation_colors,  # Custom group colors
+         show_colnames = FALSE,
+         cluster_cols = FALSE,
+         main = "Heatmap of 50 Significant Genes BA9",
+         color = colorRampPalette(c("navy", "white", "red"))(50))
+```
+
+Volcano Plot
+
+```{r}
+df <- filtered_Control_vs_Schizophrenia
+df$diffexpressed <- "NO"
+# Categorize genes as "UP" if log2FoldChange > 0.6 and p-value < 0.05
+df$diffexpressed[df$Fold_Change > 1 & df$P_Value < 0.01] <- "UP"
+# Categorize genes as "DOWN" if log2FoldChange < -0.6 and p-value < 0.05
+df$diffexpressed[df$Fold_Change < -1 & df$P_Value < 0.01] <- "DOWN"
+df$padj <- p.adjust(df$P_Value, method = "fdr")
+
+df$delabel <- NA
+df$delabel[df$diffexpressed != "NO"] <-df$Gene_symbol [df$diffexpressed != "NO"]
+```
+
+
+```{r}
+mycolors <- c("#00AFBB", "#bb0c00", "grey")
+names(mycolors) <- c("DOWN", "UP", "NO")
+
+pCS<- ggplot(data=df, aes(x=Fold_Change, y=-log10(P_Value), col=diffexpressed, label=delabel)) + 
+
+  geom_vline(xintercept=c(-1, 1), col= "grey", linetype = 'dashed') +
+  geom_hline(yintercept=-log10(0.05), col= "grey", linetype = 'dashed')+
+ scale_colour_manual(values = mycolors)+
+ labs(x = expression("log"[2]*"FC"), y = expression("-log"[10]*"p-value")) + 
+ ggtitle('Volcano plot control vs schizophrenia (BA9)') +
+  geom_point() + 
+  theme_minimal()+
+  geom_text()
+
+```
+
+```{r}
+grid.arrange(pBC, pBD, pBS, pCD, pCS, pSD, nrow = 2, ncol = 3)
+```
+
+
+
