@@ -1,0 +1,325 @@
+---
+title: "Untitled"
+author: "Rayan Slatni"
+date: "2023-07-25"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r, message=FALSE, warning=FALSE}
+PACKAGES <- c(
+  "caret",          # To create data partitions
+  "genefilter",     # To remove low count genes
+  "ggplot2",        # To plot and save images
+  "gplots",
+  "ggpubr",
+  "glmnet",         # To perform lasso-ridge
+  "MASS",           # To use LDA function 
+  "pROC",           # To plot ROC curves
+  "randomForest",   # To use random forest algorithm
+  "RColorBrewer",   # To define heatmap palette
+  "reshape2",       # To melt dataset for plotting
+  "ROCR",           # To plot ROC curves 
+  "tidyverse",      # To make data handling easier
+  "GEOquery" ,       #for access to the databse
+  "useful",
+  "factoextra",  # To get better plots (ggplot wrapper)
+  "ggfortify",      #To plot PCA
+  "vctrs",
+  "tibble",
+  "e1071",          #Statistic
+  "gtools",         #fold-change
+  "RCy3",           #Cytoscape
+  "glue",           #Saving plots 
+  "colorBlindness", #Color palette
+  "rScudo",         #Scudo
+  "gProfileR",      #Interface to G-Profiler
+  "gprofiler2",     #Interface to G-Profiler
+  "BiocManager",
+  "KEGGREST",
+  "KEGGgraph",
+  "AnnotationDbi",
+  "org.Hs.eg.db",
+  "pathfindR.data",
+  "hgu95av2.db", #Genome annotation Affy HU 95
+  "R.filesets",
+  "hugene10sttranscriptcluster.db"
+)
+
+invisible(lapply(PACKAGES, library, character.only = TRUE))
+```
+
+```{r}
+gse1<- getGEO("GSE53987") #GSE identifier of the file
+gse<-gse1[[1]]
+ex<- exprs(gse)# ex is the new data matrix
+dim(ex) #54675 genes and 205 samples
+meta<- pData(gse) #phenoData #save the meta data
+```
+
+```{r}
+dataHippo<- ex[,1:68] 
+dataBA46<- ex[,69:136] 
+dataStriatum<- ex[,137:205] 
+```
+
+
+Normalization by log2 and housekeeping genes
+```{r}
+GADPH<-mean(log2(dataBA46["212581_x_at",]))
+```
+
+```{r}
+dataBA46<- log2(dataBA46)
+dataHippo<- log2(dataHippo)
+dataStriatum<- log2(dataStriatum)
+```
+
+Redifine after the transposion
+```{r}
+dataBA46<- dataBA46/GADPH
+dataHippo<- dataHippo/GADPH
+dataStriatum<- dataStriatum/GADPH
+```
+
+```{r}
+grpcol_BA46<- c(rep("#cc6a70ff", 17),rep("#253582ff", 19), rep("#7e4e90ff",17 ), rep("#f9a242ff",15))
+Group_BA46 = c(rep("Bipolar", 17), rep("Control", 19), rep("Depression", 17), rep("Schizophrenia", 15))
+
+grpcol_Hippo<- c(rep("#cc6a70ff", 18),rep("#253582ff", 18), rep("#7e4e90ff",17 ), rep("#f9a242ff",15))
+
+Group_Hippo = c(rep("Bipolar", 18), rep("Control", 18), rep("Depression", 17), rep("Schizophrenia", 15))
+
+grpcol_Striatum<- c(rep("#cc6a70ff", 17),rep("#253582ff", 18), rep("#7e4e90ff",16 ), rep("#f9a242ff",18))
+Group_Striatum = c(rep("Bipolar", 17), rep("Control", 18), rep("Depression", 16), rep("Schizophrenia", 18))
+```
+
+
+
+Define the input
+```{r}
+pV <-0.001
+gruppo1 <- "Schizophrenia"
+gruppo2 <- "Depression"
+i1 <- c(52:69)
+i2 <- c(36:51)
+data <- dataStriatum
+group1_data <- data[,i1]
+group2_data <- data[,i2]
+```
+
+```{r}
+#assign a name to the dataframe
+name <- paste(gruppo1, gruppo2, sep = "_vs_") 
+assign(name, create_mine_data(data, gruppo1, gruppo2, group1_data, group2_data ))
+```
+
+
+
+```{r}
+#ex_Striatum <-dataStriatum[c(result1, result2, result3, result4, result5, result6 ),] 
+#dim(ex_Striatum) #we obtain 14083 significant genes
+```
+
+
+
+Let's transpose the matrix and add the Groups
+```{r}
+ex_Striatum_t <- t(ex_Striatum) #LDA need transposition
+ex_Striatum_t <- cbind(as.data.frame(ex_Striatum_t),Group_Striatum) #LDA need labels, added to the data matrix
+colnames(ex_Striatum_t)[ncol(ex_Striatum_t)] <- "Group"
+duplicated_names <- duplicated(colnames(ex_Striatum_t))
+dataStriatum<-ex_Striatum_t[!duplicated_names] #7490 after removing the duplicates
+```
+
+```{r}
+save(dataStriatum, file = "dataStriatum.RData")
+```
+
+
+
+Separate the data into training and validation set
+```{r}
+set.seed(123)
+# Sample 80% of the data for training and 20% for validation
+train_indices <- sample(1:nrow(dataHippo), 0.8 * nrow(dataHippo))
+train_data <- dataHippo[train_indices, ]
+validation_data <- dataHippo[-train_indices, ]
+```
+
+Define the CV method
+```{r}
+metric <- "Accuracy"
+control <- trainControl(method = "repeatedcv", number = 10, repeats = 10)
+```
+
+
+Run the LDA
+```{r}
+library(MASS)
+lda_model <- lda(Group ~ ., data = train_data)
+
+# Predict on validation set
+lda_predictions <- predict(lda_model, newdata = validation_data)$class
+
+# Calculate accuracy
+lda_accuracy <- mean(lda_predictions == validation_data$Group)
+```
+LDA ha 0.5 of accuracy for BA46, 0.4 for Striatum,  0.4 for Hippo
+
+
+RF for feature selection
+```{r}
+set.seed(1)
+fit.rf <- train(Group~., data = dataHippo, method="rf",
+                metric=metric, trControl=control)
+
+```
+
+```{r}
+confusionMatrix(fit.rf)
+plot(fit.rf)
+```
+RF has accuracy BA46 0.625, Striatum 0.5
+
+
+
+
+
+Since Rf is the one that better performed, let's extract the variable
+```{r}
+impp <- varImp(fit.rf)
+impDF<-data.frame(impp$importance) 
+geni_Hippo<-rownames(impDF)[order(impp$importance$Overall, decreasing = TRUE)]
+geni_Hippo<- str_sub(geni_Hippo,2,-2)
+write.csv(geni_Hippo[1:200], file = "geni_Hippo_200", quote=FALSE, row.names = FALSE)
+#rownames(imp)
+#rownames(impDF)[order(imp$Overall, decreasing=TRUE)]
+#rownames(imp)[order(imp$Overall, decreasing=TRUE)]
+```
+
+
+
+
+Now from the converted list, remove the duplicats
+
+```{r}
+data <- readLines("geni_Striatum_200_ENTERGZ")
+unique_data <- unique(data)
+unique_data <- sort(unique_data)
+write.table(unique_data, file = "geni_Striatum_200_ENTERGZ_unique.txt", quote=FALSE, row.names = FALSE, col.names = FALSE)
+```
+
+
+Upload the list already computed with LDA
+```{r}
+modified_gene_names <-readLines("geni_Striatum_200")
+```
+
+Now I want to filter the pairwise data in order to keep only the genes that are important for LDA
+```{r}
+filtered_Bipolar_vs_Control <- Bipolar_vs_Control[Bipolar_vs_Control $Gene_ID %in% modified_gene_names, ]
+
+filtered_Bipolar_vs_Depression <- Bipolar_vs_Depression[Bipolar_vs_Depression$Gene_ID %in% modified_gene_names, ]
+
+filtered_Bipolar_vs_Schizophrenia <- Bipolar_vs_Schizophrenia[Bipolar_vs_Schizophrenia$Gene_ID %in% modified_gene_names, ]
+
+filtered_Control_vs_Depression <- Control_vs_Depression[Control_vs_Depression$Gene_ID %in% modified_gene_names, ]
+
+filtered_Control_vs_Schizophrenia <- Control_vs_Schizophrenia [Control_vs_Schizophrenia$Gene_ID %in% modified_gene_names, ]
+
+filtered_Schizophrenia_vs_Depression <- Schizophrenia_vs_Depression [Schizophrenia_vs_Depression$Gene_ID %in% modified_gene_names, ]
+```
+
+Save some results 
+```{r}
+save(filtered_Bipolar_vs_Schizophrenia, file = "filtered_Bipolar_vs_Schizophrenia.RData")
+```
+
+
+Identify the genes to their actual name
+
+```{r}
+x<- c(gse@featureData@data$ID)
+y<- c(gse@featureData@data$`Gene Symbol`)
+geni<- data.frame("Affy"=x,"Name"=y)
+```
+
+Upload the filtered datamatrix dataBA46
+
+PHEAMAP
+```{r}
+df <- dataStriatum
+#transpose and remove the group 
+sig_expr_matrix <- t(df[, modified_gene_names]) #selct the 200 gene by LDA
+geni_matrix <- geni$Name[geni$Affy %in% modified_gene_names]
+rownames(sig_expr_matrix) <- geni_matrix
+#change some gene name
+```
+
+```{r}
+sample_annotations <- data.frame(Group_Striatum = Group_Striatum)
+rownames(sample_annotations) <- colnames(sig_expr_matrix)
+group_colors <- c("Bipolar" = "#cc6a70ff", "Control" = "#253582ff", 
+                  "Depression" = "#7e4e90ff",  "Schizophrenia" = "#f9a242ff")
+annotation_colors <- list(Group_Striatum = group_colors)
+```
+
+
+```{r}
+pheatmap(sig_expr_matrix[c(1:11, 14, 17:20, 23:25, 28, 31, 35:37, 42:67), ], 
+         scale = "row", 
+         cluster_rows = TRUE, 
+         annotation_col = sample_annotations,
+         annotation_colors = annotation_colors,  # Custom group colors
+         show_colnames = FALSE,
+         cluster_cols = FALSE,
+         main = "Heatmap of 50 Significant Genes Striatum",
+         color = colorRampPalette(c("navy", "white", "red"))(50))
+```
+
+
+
+
+Volcano Plot
+
+```{r}
+df <- filtered_Control_vs_Schizophrenia
+df$diffexpressed <- "NO"
+# Categorize genes as "UP" if log2FoldChange > 0.6 and p-value < 0.05
+df$diffexpressed[df$Fold_Change > 1 & df$P_Value < 0.01] <- "UP"
+# Categorize genes as "DOWN" if log2FoldChange < -0.6 and p-value < 0.05
+df$diffexpressed[df$Fold_Change < -1 & df$P_Value < 0.01] <- "DOWN"
+df$padj <- p.adjust(df$P_Value, method = "fdr")
+
+df$delabel <- NA
+df$delabel[df$diffexpressed != "NO"] <-df$Gene_Symbol [df$diffexpressed != "NO"]
+```
+
+
+```{r}
+mycolors <- c("#00AFBB", "#bb0c00", "grey")
+names(mycolors) <- c("DOWN", "UP", "NO")
+
+pCS<- ggplot(data=df, aes(x=Fold_Change, y=-log10(P_Value), col=diffexpressed, label=delabel)) + 
+
+  geom_vline(xintercept=c(-1, 1), col= "grey", linetype = 'dashed') +
+  geom_hline(yintercept=-log10(0.05), col= "grey", linetype = 'dashed')+
+ scale_colour_manual(values = mycolors)+
+ labs(x = expression("log"[2]*"FC"), y = expression("-log"[10]*"p-value")) + 
+ ggtitle('Volcano plot control vs schizophrenia  (Striatum)') +
+  geom_point() + 
+  theme_minimal()+
+  geom_text()
+
+```
+
+```{r}
+
+grid.arrange(pBC, pBD, pBS, pCD, pCS, pSD, nrow = 2, ncol = 3)
+```
+
